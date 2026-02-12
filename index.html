@@ -6,6 +6,7 @@
     <title>マインドマップ作成ツール</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700&display=swap');
@@ -701,19 +702,92 @@
     }
 
     // --- エクスポート ---
-    function exportPDF() {
-        // プレビュー環境（iframe内）かどうかのチェック
-        if (window.self !== window.top) {
-            alert("【プレビュー環境での注意】\nブラウザのセキュリティ制限により、この画面上では印刷ダイアログ（PDF保存）が開かない場合があります。\n\nその場合は、右上のボタンからHTMLファイルを「ダウンロード」し、ブラウザで直接開いて実行してください。");
+    async function exportPDF() {
+        // jsPDFがロードされているか確認
+        if (!window.jspdf) {
+            alert("PDF生成ライブラリの読み込みに失敗しました。");
+            return;
         }
+        
+        const { jsPDF } = window.jspdf;
 
-        const originalTitle = document.title;
-        document.title = state.data.text + "_マインドマップ";
-        window.focus();
-        setTimeout(() => {
-            window.print();
-            setTimeout(() => { document.title = originalTitle; }, 500);
-        }, 100);
+        // 現在の状態を保存
+        const originalTransform = mapContent.style.transform;
+        const originalWidth = mapContent.style.width;
+        const originalHeight = mapContent.style.height;
+        const originalLeft = mapContent.style.left;
+        const originalTop = mapContent.style.top;
+        
+        // 選択状態を一時解除（見た目のため）
+        const selectedNode = document.querySelector('.node.selected');
+        if(selectedNode) selectedNode.classList.remove('selected');
+
+        // 全体をキャプチャするためにスタイルをリセット・調整
+        // scaleを1に戻し、サイズをコンテンツに合わせる
+        mapContent.style.transform = 'scale(1)';
+        mapContent.style.width = 'fit-content';
+        mapContent.style.height = 'fit-content';
+        mapContent.style.left = '0';
+        mapContent.style.top = '0';
+        
+        // 背景色決定
+        const bgColor = state.darkMode ? "#111827" : "#f3f4f6";
+
+        try {
+            document.body.style.cursor = 'wait';
+
+            // html2canvasで画像化
+            const canvas = await html2canvas(mapContent, {
+                backgroundColor: bgColor,
+                scale: 2, // 高画質化
+                logging: false,
+                useCORS: true
+            });
+
+            const imgData = canvas.toDataURL('image/png');
+
+            // PDF生成 (A4横)
+            // 向き: landscape (l), 単位: mm, サイズ: a4
+            const pdf = new jsPDF('l', 'mm', 'a4');
+            
+            const pageWidth = pdf.internal.pageSize.getWidth();
+            const pageHeight = pdf.internal.pageSize.getHeight();
+            
+            // 画像のサイズ比率に合わせてPDF内のサイズを計算
+            const imgWidth = canvas.width;
+            const imgHeight = canvas.height;
+            
+            // PDFページに収まるようにスケーリング (マージン10mm)
+            const margin = 10;
+            const contentWidth = pageWidth - (margin * 2);
+            const contentHeight = pageHeight - (margin * 2);
+            
+            const ratio = Math.min(contentWidth / imgWidth, contentHeight / imgHeight);
+            
+            const pdfImgWidth = imgWidth * ratio;
+            const pdfImgHeight = imgHeight * ratio;
+            
+            // 中央配置
+            const x = (pageWidth - pdfImgWidth) / 2;
+            const y = (pageHeight - pdfImgHeight) / 2;
+
+            pdf.addImage(imgData, 'PNG', x, y, pdfImgWidth, pdfImgHeight);
+            pdf.save((state.data.text || 'mindmap') + '_マインドマップ.pdf');
+
+        } catch (err) {
+            console.error("PDF Export Error:", err);
+            alert("PDFの出力に失敗しました。\n" + err.message);
+        } finally {
+            // 状態を復元
+            mapContent.style.transform = originalTransform;
+            mapContent.style.width = originalWidth;
+            mapContent.style.height = originalHeight;
+            mapContent.style.left = originalLeft;
+            mapContent.style.top = originalTop;
+            
+            if(selectedNode) selectedNode.classList.add('selected');
+            document.body.style.cursor = 'default';
+        }
     }
 
     function exportPNG() {
