@@ -701,9 +701,79 @@
         hint.classList.toggle('hidden');
     }
 
+    // --- キャプチャ用ヘルパー ---
+    // 画面のズームやスクロールの影響を受けないように、
+    // コンテンツを一時的にbody直下の固定位置へ移動して撮影する
+    async function captureMap() {
+        const selectedNode = document.querySelector('.node.selected');
+        if(selectedNode) selectedNode.classList.remove('selected');
+
+        // 現在の親と位置情報を保存
+        const parent = mapContent.parentNode;
+        const nextSibling = mapContent.nextSibling;
+        const originalStyle = {
+            transform: mapContent.style.transform,
+            left: mapContent.style.left,
+            top: mapContent.style.top,
+            position: mapContent.style.position,
+            margin: mapContent.style.margin
+        };
+
+        // 一時的にbody直下へ移動し、左上固定にする
+        // これにより親要素のflexboxやtransform、overflowの影響を排除
+        document.body.appendChild(mapContent);
+        mapContent.style.position = 'fixed';
+        mapContent.style.top = '0';
+        mapContent.style.left = '0';
+        mapContent.style.transform = 'scale(1)'; // 等倍
+        mapContent.style.margin = '0';
+        mapContent.style.zIndex = '9999';
+        
+        // 背景色を設定 (透過対策)
+        const bgColor = state.darkMode ? "#111827" : "#f3f4f6";
+        mapContent.style.backgroundColor = bgColor;
+
+        // 重要: レイアウト変更に伴い、線の再描画が必要
+        // SVGコンテナもmapContent内にあるので追従するが、座標再計算が必要
+        // scale=1の状態での座標で再描画させる
+        const tempScale = state.scale;
+        state.scale = 1; // 一時的にスケール1として計算させる
+        drawLines(); 
+        state.scale = tempScale; // 戻す
+
+        let canvas;
+        try {
+            canvas = await html2canvas(mapContent, {
+                backgroundColor: bgColor,
+                scale: 2, // 高解像度
+                logging: false,
+                useCORS: true,
+                // ウィンドウサイズの影響を受けないように指定
+                windowWidth: mapContent.scrollWidth + 100,
+                windowHeight: mapContent.scrollHeight + 100
+            });
+        } finally {
+            // 復元処理
+            if (nextSibling) {
+                parent.insertBefore(mapContent, nextSibling);
+            } else {
+                parent.appendChild(mapContent);
+            }
+            // スタイル復元
+            Object.assign(mapContent.style, originalStyle);
+            mapContent.style.backgroundColor = ''; // 背景色削除
+
+            // 選択状態復元
+            if(selectedNode) selectedNode.classList.add('selected');
+            
+            // 線を元のズーム倍率で再描画
+            drawLines();
+        }
+        return canvas;
+    }
+
     // --- エクスポート ---
     async function exportPDF() {
-        // jsPDFがロードされているか確認
         if (!window.jspdf) {
             alert("PDF生成ライブラリの読み込みに失敗しました。");
             return;
@@ -711,53 +781,22 @@
         
         const { jsPDF } = window.jspdf;
 
-        // 現在の状態を保存
-        const originalTransform = mapContent.style.transform;
-        const originalWidth = mapContent.style.width;
-        const originalHeight = mapContent.style.height;
-        const originalLeft = mapContent.style.left;
-        const originalTop = mapContent.style.top;
-        
-        // 選択状態を一時解除（見た目のため）
-        const selectedNode = document.querySelector('.node.selected');
-        if(selectedNode) selectedNode.classList.remove('selected');
-
-        // 全体をキャプチャするためにスタイルをリセット・調整
-        // scaleを1に戻し、サイズをコンテンツに合わせる
-        mapContent.style.transform = 'scale(1)';
-        mapContent.style.width = 'fit-content';
-        mapContent.style.height = 'fit-content';
-        mapContent.style.left = '0';
-        mapContent.style.top = '0';
-        
-        // 背景色決定
-        const bgColor = state.darkMode ? "#111827" : "#f3f4f6";
-
         try {
             document.body.style.cursor = 'wait';
 
-            // html2canvasで画像化
-            const canvas = await html2canvas(mapContent, {
-                backgroundColor: bgColor,
-                scale: 2, // 高画質化
-                logging: false,
-                useCORS: true
-            });
-
+            // キャプチャ実行
+            const canvas = await captureMap();
             const imgData = canvas.toDataURL('image/png');
 
             // PDF生成 (A4横)
-            // 向き: landscape (l), 単位: mm, サイズ: a4
             const pdf = new jsPDF('l', 'mm', 'a4');
-            
             const pageWidth = pdf.internal.pageSize.getWidth();
             const pageHeight = pdf.internal.pageSize.getHeight();
             
-            // 画像のサイズ比率に合わせてPDF内のサイズを計算
             const imgWidth = canvas.width;
             const imgHeight = canvas.height;
             
-            // PDFページに収まるようにスケーリング (マージン10mm)
+            // マージン考慮してスケーリング
             const margin = 10;
             const contentWidth = pageWidth - (margin * 2);
             const contentHeight = pageHeight - (margin * 2);
@@ -767,7 +806,6 @@
             const pdfImgWidth = imgWidth * ratio;
             const pdfImgHeight = imgHeight * ratio;
             
-            // 中央配置
             const x = (pageWidth - pdfImgWidth) / 2;
             const y = (pageHeight - pdfImgHeight) / 2;
 
@@ -778,41 +816,27 @@
             console.error("PDF Export Error:", err);
             alert("PDFの出力に失敗しました。\n" + err.message);
         } finally {
-            // 状態を復元
-            mapContent.style.transform = originalTransform;
-            mapContent.style.width = originalWidth;
-            mapContent.style.height = originalHeight;
-            mapContent.style.left = originalLeft;
-            mapContent.style.top = originalTop;
-            
-            if(selectedNode) selectedNode.classList.add('selected');
             document.body.style.cursor = 'default';
         }
     }
 
-    function exportPNG() {
-        const originalTransform = mapContent.style.transform;
-        mapContent.style.transform = 'scale(1)';
-        mapContent.style.width = 'fit-content';
-        
-        document.querySelectorAll('.node.selected').forEach(el => el.classList.remove('selected'));
-        
-        // 背景色を現在のテーマに合わせる
-        const bgColor = state.darkMode ? "#111827" : "#f3f4f6";
-
-        html2canvas(mapContent, {
-            backgroundColor: bgColor,
-            scale: 2
-        }).then(canvas => {
+    async function exportPNG() {
+        try {
+            document.body.style.cursor = 'wait';
+            
+            const canvas = await captureMap();
+            
             const link = document.createElement('a');
-            link.download = state.data.text + '_マインドマップ.png';
+            link.download = (state.data.text || 'mindmap') + '_マインドマップ.png';
             link.href = canvas.toDataURL();
             link.click();
-            
-            mapContent.style.transform = originalTransform;
-            mapContent.style.width = '';
-            selectNode(state.selectedId);
-        });
+
+        } catch (err) {
+            console.error("PNG Export Error:", err);
+            alert("PNGの出力に失敗しました。\n" + err.message);
+        } finally {
+            document.body.style.cursor = 'default';
+        }
     }
 
     function exportText() {
