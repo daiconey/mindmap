@@ -1,0 +1,876 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>マインドマップ作成ツール</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+JP:wght@400;700&display=swap');
+
+        :root {
+            --bg-color: #f3f4f6;
+            --dot-color: #cbd5e1;
+            --node-bg: #ffffff;
+            --node-border: #ccc;
+            --node-text: #000000;
+            --toolbar-bg: rgba(255, 255, 255, 0.9);
+            --toolbar-text: #374151;
+            --toolbar-border: #e5e7eb;
+        }
+
+        body.dark-mode {
+            --bg-color: #111827;
+            --dot-color: #374151;
+            --node-bg: #1f2937;
+            --node-border: #4b5563;
+            --node-text: #f3f4f6;
+            --toolbar-bg: rgba(31, 41, 55, 0.9);
+            --toolbar-text: #e5e7eb;
+            --toolbar-border: #374151;
+        }
+
+        body {
+            font-family: 'Noto Sans JP', sans-serif;
+            overflow: hidden;
+            background-color: var(--bg-color);
+            color: var(--node-text);
+            transition: background-color 0.3s ease, color 0.3s ease;
+        }
+
+        /* ノードのスタイル */
+        .node {
+            position: relative;
+            padding: 8px 16px;
+            border-radius: 8px;
+            background: var(--node-bg);
+            border: 2px solid var(--node-border);
+            color: var(--node-text);
+            cursor: pointer;
+            min-width: 100px;
+            max-width: 300px;
+            transition: all 0.2s ease;
+            z-index: 10;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            outline: none;
+            user-select: none;
+        }
+
+        .node:hover {
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            transform: translateY(-1px);
+        }
+
+        .node.selected {
+            border-color: #3b82f6 !important;
+            box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.5);
+        }
+
+        .node[contenteditable="true"] {
+            cursor: text;
+            border-color: #3b82f6;
+            background-color: var(--node-bg); /* 編集時もテーマ色維持 */
+        }
+
+        /* SVG ライン用コンテナ */
+        #svg-container {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        /* マップ全体のコンテナ */
+        #map-canvas {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background-image: radial-gradient(var(--dot-color) 1px, transparent 1px);
+            background-size: 20px 20px;
+            touch-action: none;
+            transition: background-image 0.3s ease;
+        }
+
+        /* 内部のラッパー */
+        #map-content {
+            position: absolute;
+            top: 0;
+            left: 0;
+            transform-origin: 0 0;
+            padding: 100px;
+        }
+
+        /* ツールバーのテーマ対応 */
+        #toolbar {
+            background-color: var(--toolbar-bg);
+            border-color: var(--toolbar-border);
+            color: var(--toolbar-text);
+            backdrop-filter: blur(4px); /* すりガラス効果 */
+        }
+        #toolbar button {
+            color: var(--toolbar-text);
+        }
+        #toolbar button:hover {
+            background-color: rgba(128, 128, 128, 0.1);
+        }
+
+        /* ツリー構造 */
+        .branch { display: flex; align-items: center; }
+        .children {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            margin-left: 40px;
+            gap: 10px;
+        }
+
+        /* 両側レイアウト */
+        .layout-bilateral { flex-direction: row; }
+        .layout-bilateral .left-side {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: flex-end;
+            margin-right: 40px;
+            gap: 10px;
+            direction: rtl;
+        }
+        .layout-bilateral .left-side .children {
+            margin-left: 0;
+            margin-right: 40px;
+            direction: ltr;
+        }
+        .layout-bilateral .left-side .node { direction: ltr; }
+
+        /* ズームコントロール */
+        #zoom-controls {
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            z-index: 50;
+        }
+        .zoom-btn {
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            background: var(--toolbar-bg);
+            color: var(--toolbar-text);
+            border: 1px solid var(--toolbar-border);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1rem;
+            cursor: pointer;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            transition: all 0.2s;
+        }
+        .zoom-btn:hover {
+            background-color: rgba(128, 128, 128, 0.1);
+            transform: scale(1.1);
+        }
+
+        /* 印刷用 */
+        @media print {
+            @page { size: landscape; margin: 0; }
+            body { background: white !important; -webkit-print-color-adjust: exact; }
+            #toolbar, #controls-hint, #zoom-controls, #btn-help-toggle { display: none !important; }
+            #map-canvas {
+                width: 100%; height: 100%; overflow: visible;
+                background: white !important; display: block;
+            }
+            #map-content {
+                transform: none !important; position: static !important;
+                width: fit-content; margin: 0 auto; padding: 20px;
+            }
+            .node { box-shadow: none; border: 1px solid #000; color: #000 !important; background: #fff !important; }
+            path { stroke: #000 !important; } /* 線を黒に強制 */
+        }
+    </style>
+</head>
+<body>
+
+    <!-- ツールバー (コンパクト化) -->
+    <div id="toolbar" class="fixed top-4 left-1/2 transform -translate-x-1/2 px-4 py-2 rounded-full shadow-lg z-50 flex items-center gap-2 border transition-colors duration-300">
+        
+        <!-- Theme -->
+        <button onclick="toggleTheme()" class="p-2 rounded-full transition" title="ダークモード切替">
+            <i class="fas fa-moon" id="theme-icon"></i>
+        </button>
+        
+        <div class="h-4 w-px bg-gray-300 dark:bg-gray-600 mx-1"></div>
+
+        <!-- Layout -->
+        <button onclick="toggleLayout()" id="btn-layout" class="p-2 rounded-full transition" title="レイアウト: 両側">
+            <i class="fas fa-sitemap"></i>
+        </button>
+
+        <!-- Color -->
+        <button onclick="toggleColor()" id="btn-color" class="p-2 rounded-full transition text-purple-600" title="カラー: レインボー">
+            <i class="fas fa-palette"></i>
+        </button>
+        
+        <div class="h-4 w-px bg-gray-300 dark:bg-gray-600 mx-1"></div>
+
+        <!-- Add/Delete -->
+        <button onclick="addChild()" class="p-2 rounded-full transition text-blue-500 hover:text-blue-600" title="子ノード追加 (Tab)">
+            <i class="fas fa-plus-circle"></i>
+        </button>
+        <button onclick="deleteNode()" class="p-2 rounded-full transition text-red-500 hover:text-red-600" title="削除 (Delete)">
+            <i class="fas fa-trash"></i>
+        </button>
+
+        <div class="h-4 w-px bg-gray-300 dark:bg-gray-600 mx-1"></div>
+
+        <!-- Exports -->
+        <button onclick="exportPDF()" class="p-2 rounded-full transition hover:text-gray-900 dark:hover:text-white" title="PDF出力">
+            <i class="fas fa-file-pdf"></i>
+        </button>
+        <button onclick="exportPNG()" class="p-2 rounded-full transition text-green-600 hover:text-green-700" title="PNG画像出力">
+            <i class="fas fa-image"></i>
+        </button>
+        <button onclick="exportText()" class="p-2 rounded-full transition text-gray-600 hover:text-gray-800 dark:text-gray-400 dark:hover:text-gray-200" title="テキスト(箇条書き)出力">
+            <i class="fas fa-list-ul"></i>
+        </button>
+    </div>
+
+    <!-- ズームコントロール -->
+    <div id="zoom-controls">
+        <button class="zoom-btn" onclick="zoomIn()" title="拡大">
+            <i class="fas fa-plus"></i>
+        </button>
+        <button class="zoom-btn" onclick="zoomOut()" title="縮小">
+            <i class="fas fa-minus"></i>
+        </button>
+        <button class="zoom-btn" onclick="resetZoom()" title="全体を表示">
+            <i class="fas fa-compress-arrows-alt"></i>
+        </button>
+    </div>
+
+    <!-- ヘルプボタン -->
+    <button id="btn-help-toggle" onclick="toggleHelp()" class="fixed bottom-4 left-4 w-10 h-10 bg-white dark:bg-gray-800 rounded-full shadow-lg z-50 flex items-center justify-center text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 transition" title="操作説明を表示">
+        <i class="fas fa-question"></i>
+    </button>
+
+    <!-- キー操作ヒント (デフォルト非表示: hidden) -->
+    <div id="controls-hint" class="fixed bottom-16 left-4 bg-white/90 dark:bg-gray-800/90 dark:text-gray-300 p-4 rounded shadow text-xs text-gray-600 pointer-events-none z-50 hidden">
+        <button onclick="toggleHelp()" class="absolute top-1 right-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 pointer-events-auto cursor-pointer" title="閉じる">
+            <i class="fas fa-times"></i>
+        </button>
+        <div class="mt-2">
+            <div><span class="font-bold">Click</span> : 選択</div>
+            <div><span class="font-bold">Double Click</span> : 編集</div>
+            <div><span class="font-bold">Tab</span> : 子を追加</div>
+            <div><span class="font-bold">Enter</span> : 兄弟を追加</div>
+            <div><span class="font-bold">Delete</span> : 削除</div>
+            <div><span class="font-bold">Drag BG</span> : 移動</div>
+            <div><span class="font-bold">Wheel</span> : ズーム</div>
+        </div>
+    </div>
+
+    <!-- キャンバスエリア -->
+    <div id="map-canvas">
+        <div id="map-content">
+            <svg id="svg-container"></svg>
+            <div id="root-container">
+                <!-- マインドマップはここに生成されます -->
+            </div>
+        </div>
+    </div>
+
+<script>
+    // --- データ構造と初期状態 ---
+    const initialData = {
+        id: 1,
+        text: "メインテーマ",
+        children: [
+            { id: 2, text: "アイデア 1", children: [
+                { id: 4, text: "詳細 A", children: [] },
+                { id: 5, text: "詳細 B", children: [] }
+            ]},
+            { id: 3, text: "アイデア 2", children: [
+                { id: 6, text: "メモ", children: [] }
+            ]},
+            { id: 7, text: "アイデア 3", children: [] },
+            { id: 8, text: "アイデア 4", children: [] }
+        ]
+    };
+
+    let state = {
+        data: JSON.parse(JSON.stringify(initialData)),
+        selectedId: 1,
+        layout: 'bilateral',
+        colorMode: 'rainbow',
+        darkMode: false,
+        scale: 1,
+        panning: false,
+        panStart: { x: 0, y: 0 },
+        panOffset: { x: 0, y: 0 }
+    };
+
+    let nextId = 100;
+
+    // --- DOM要素 ---
+    const rootContainer = document.getElementById('root-container');
+    const svgContainer = document.getElementById('svg-container');
+    const mapContent = document.getElementById('map-content');
+    const mapCanvas = document.getElementById('map-canvas');
+
+    // --- レンダリング ---
+
+    function init() {
+        render();
+        centerMap();
+        addGlobalListeners();
+        // システムのダークモード設定を確認
+        if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+            toggleTheme();
+        }
+    }
+
+    function render() {
+        rootContainer.innerHTML = '';
+        svgContainer.innerHTML = '';
+
+        if (state.layout === 'bilateral') {
+            renderBilateral();
+        } else {
+            renderUnilateral();
+        }
+
+        requestAnimationFrame(drawLines);
+    }
+
+    function renderUnilateral() {
+        const rootWrapper = document.createElement('div');
+        rootWrapper.className = 'branch';
+        
+        const rootNodeEl = createNodeElement(state.data, 0, 0);
+        
+        const childrenWrapper = document.createElement('div');
+        childrenWrapper.className = 'children';
+
+        state.data.children.forEach((child, index) => {
+            childrenWrapper.appendChild(createBranchRecursive(child, 1, index));
+        });
+
+        rootWrapper.appendChild(rootNodeEl);
+        rootWrapper.appendChild(childrenWrapper);
+        rootContainer.appendChild(rootWrapper);
+    }
+
+    function renderBilateral() {
+        const rootWrapper = document.createElement('div');
+        rootWrapper.className = 'branch layout-bilateral';
+
+        const leftChildren = [];
+        const rightChildren = [];
+
+        state.data.children.forEach((child, index) => {
+            if (index % 2 === 0) {
+                rightChildren.push(child);
+            } else {
+                leftChildren.push(child);
+            }
+        });
+
+        const leftContainer = document.createElement('div');
+        leftContainer.className = 'left-side';
+        leftChildren.forEach((child, index) => {
+            leftContainer.appendChild(createBranchRecursive(child, 1, index, true));
+        });
+
+        const rootNodeEl = createNodeElement(state.data, 0, 0);
+
+        const rightContainer = document.createElement('div');
+        rightContainer.className = 'children';
+        rightChildren.forEach((child, index) => {
+            rightContainer.appendChild(createBranchRecursive(child, 1, index));
+        });
+
+        rootWrapper.appendChild(leftContainer);
+        rootWrapper.appendChild(rootNodeEl);
+        rootWrapper.appendChild(rightContainer);
+        rootContainer.appendChild(rootWrapper);
+    }
+
+    function createBranchRecursive(nodeData, level, index, isLeft = false) {
+        const branch = document.createElement('div');
+        branch.className = 'branch';
+        
+        const nodeEl = createNodeElement(nodeData, level, index, isLeft);
+        
+        branch.appendChild(nodeEl);
+
+        if (nodeData.children && nodeData.children.length > 0) {
+            const childrenWrapper = document.createElement('div');
+            childrenWrapper.className = 'children';
+            nodeData.children.forEach((child, i) => {
+                childrenWrapper.appendChild(createBranchRecursive(child, level + 1, index));
+            });
+            branch.appendChild(childrenWrapper);
+        }
+
+        return branch;
+    }
+
+    function createNodeElement(nodeData, level, index, isLeft = false) {
+        const el = document.createElement('div');
+        el.className = 'node';
+        if (nodeData.id === state.selectedId) el.classList.add('selected');
+        
+        el.innerText = nodeData.text;
+        el.dataset.id = nodeData.id;
+        el.contentEditable = false;
+
+        const borderColor = getNodeColor(level, index);
+        
+        // 色設定
+        if (state.colorMode === 'rainbow' && level > 0) {
+            el.style.borderBottomColor = borderColor;
+            el.style.borderBottomWidth = "4px";
+        } else if (state.colorMode === 'black') {
+            // ダークモード時は白っぽいボーダー、ライトモード時は黒っぽいボーダー
+            el.style.borderBottomColor = state.darkMode ? '#666' : '#333';
+            el.style.borderBottomWidth = "2px";
+        }
+
+        // ルートノード
+        if (level === 0) {
+            el.style.fontSize = '1.2rem';
+            el.style.fontWeight = 'bold';
+            el.style.backgroundColor = state.darkMode ? '#4b5563' : '#333';
+            el.style.color = '#fff';
+            el.style.border = 'none';
+        }
+
+        el.onclick = (e) => {
+            e.stopPropagation(); 
+            selectNode(nodeData.id);
+        };
+
+        el.ondblclick = (e) => {
+            e.stopPropagation();
+            startEditing(el, nodeData.id);
+        };
+
+        el.onkeydown = (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                el.blur(); 
+            }
+        };
+
+        el.onblur = () => {
+            updateNodeText(nodeData.id, el.innerText);
+            el.contentEditable = false;
+        };
+
+        return el;
+    }
+
+    // --- 線（SVG）描画 ---
+
+    function drawLines() {
+        svgContainer.innerHTML = '';
+        const rootEl = document.querySelector(`.node[data-id="${state.data.id}"]`);
+        if(!rootEl) return;
+        drawLinesRecursive(state.data, rootEl);
+    }
+
+    function drawLinesRecursive(nodeData, parentEl) {
+        if (!nodeData.children || nodeData.children.length === 0) return;
+
+        const parentRect = parentEl.getBoundingClientRect();
+        const containerRect = mapContent.getBoundingClientRect();
+        
+        const pX = (parentRect.left - containerRect.left) / state.scale;
+        const pY = (parentRect.top - containerRect.top) / state.scale;
+        const pW = parentRect.width / state.scale;
+        const pH = parentRect.height / state.scale;
+
+        const pCx = pX + pW / 2;
+        const pCy = pY + pH / 2;
+
+        nodeData.children.forEach((child) => {
+            const childEl = document.querySelector(`.node[data-id="${child.id}"]`);
+            if (!childEl) return;
+
+            const childRect = childEl.getBoundingClientRect();
+            const cX = (childRect.left - containerRect.left) / state.scale;
+            const cY = (childRect.top - containerRect.top) / state.scale;
+            const cW = childRect.width / state.scale;
+            const cH = childRect.height / state.scale;
+
+            let startX, startY, endX, endY;
+
+            if (cX > pX) {
+                startX = pX + pW; 
+                startY = pCy;
+                endX = cX;
+                endY = cY + cH / 2;
+            } else {
+                startX = pX; 
+                startY = pCy;
+                endX = cX + cW;
+                endY = cY + cH / 2;
+            }
+
+            // 線の色
+            let color;
+            if (state.colorMode === 'rainbow') {
+                color = childEl.style.borderBottomColor;
+            } else {
+                // モノクロモードの時、ダークモードなら薄いグレー、ライトモードなら濃いグレー
+                color = state.darkMode ? '#6b7280' : '#555';
+            }
+
+            const dist = Math.abs(endX - startX);
+            const cp1x = startX + (cX > pX ? dist * 0.5 : -dist * 0.5);
+            const cp1y = startY;
+            const cp2x = endX - (cX > pX ? dist * 0.5 : -dist * 0.5); 
+            const cp2y = endY;
+
+            const pathData = `M ${startX} ${startY} C ${cp1x} ${cp1y}, ${cp2x} ${cp2y}, ${endX} ${endY}`;
+
+            const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+            path.setAttribute("d", pathData);
+            path.setAttribute("stroke", color);
+            path.setAttribute("stroke-width", "2");
+            path.setAttribute("fill", "none");
+            
+            svgContainer.appendChild(path);
+
+            drawLinesRecursive(child, childEl);
+        });
+    }
+
+    // --- ロジック ---
+
+    function getNodeColor(level, index) {
+        if (state.colorMode === 'black') return '#000';
+        if (level === 0) return '#000';
+        const hue = (index * 45) % 360; 
+        return `hsl(${hue}, 80%, 60%)`; // ダークモードでも見やすいように少し明るさを調整
+    }
+
+    function findNode(id, node = state.data) {
+        if (node.id === id) return node;
+        if (node.children) {
+            for (let child of node.children) {
+                const found = findNode(id, child);
+                if (found) return found;
+            }
+        }
+        return null;
+    }
+
+    function findParent(id, node = state.data) {
+        if (!node.children) return null;
+        for (let child of node.children) {
+            if (child.id === id) return node;
+            const found = findParent(id, child);
+            if (found) return found;
+        }
+        return null;
+    }
+
+    // 操作
+    function selectNode(id) {
+        state.selectedId = id;
+        document.querySelectorAll('.node').forEach(el => el.classList.remove('selected'));
+        const target = document.querySelector(`.node[data-id="${id}"]`);
+        if (target) {
+            target.classList.add('selected');
+        }
+    }
+
+    function startEditing(el, id) {
+        selectNode(id);
+        el.contentEditable = true;
+        el.focus();
+        const range = document.createRange();
+        range.selectNodeContents(el);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+    }
+
+    function updateNodeText(id, newText) {
+        const node = findNode(id);
+        if (node && node.text !== newText) {
+            node.text = newText;
+            render();
+        }
+    }
+
+    function addChild() {
+        const parent = findNode(state.selectedId);
+        if (!parent) return;
+
+        const newNode = {
+            id: ++nextId,
+            text: "新規",
+            children: []
+        };
+        parent.children.push(newNode);
+        render();
+        setTimeout(() => {
+            const el = document.querySelector(`.node[data-id="${newNode.id}"]`);
+            if (el) startEditing(el, newNode.id);
+        }, 50);
+    }
+
+    function addSibling() {
+        if (state.selectedId === state.data.id) return; 
+        const parent = findParent(state.selectedId);
+        if (!parent) return;
+
+        const newNode = {
+            id: ++nextId,
+            text: "新規",
+            children: []
+        };
+        parent.children.push(newNode);
+        render();
+        setTimeout(() => {
+            const el = document.querySelector(`.node[data-id="${newNode.id}"]`);
+            if (el) startEditing(el, newNode.id);
+        }, 50);
+    }
+
+    function deleteNode() {
+        if (state.selectedId === state.data.id) {
+            alert("ルートノードは削除できません。");
+            return;
+        }
+        const parent = findParent(state.selectedId);
+        if (parent) {
+            parent.children = parent.children.filter(c => c.id !== state.selectedId);
+            state.selectedId = parent.id; 
+            render();
+            selectNode(parent.id); 
+        }
+    }
+
+    function toggleLayout() {
+        state.layout = state.layout === 'bilateral' ? 'unilateral' : 'bilateral';
+        const btn = document.getElementById('btn-layout');
+        btn.title = state.layout === 'bilateral' ? 'レイアウト: 両側' : 'レイアウト: 片側';
+        render();
+        centerMap();
+    }
+
+    function toggleColor() {
+        state.colorMode = state.colorMode === 'rainbow' ? 'black' : 'rainbow';
+        const btn = document.getElementById('btn-color');
+        btn.title = state.colorMode === 'rainbow' ? 'カラー: レインボー' : 'カラー: モノクロ';
+        
+        if (state.colorMode === 'black') {
+            btn.classList.remove('text-purple-600');
+            btn.classList.add('text-gray-500', 'dark:text-gray-400');
+        } else {
+            btn.classList.remove('text-gray-500', 'dark:text-gray-400');
+            btn.classList.add('text-purple-600');
+        }
+        render();
+    }
+
+    function toggleTheme() {
+        state.darkMode = !state.darkMode;
+        document.body.classList.toggle('dark-mode');
+        const icon = document.getElementById('theme-icon');
+        icon.className = state.darkMode ? 'fas fa-sun' : 'fas fa-moon';
+        render(); // 線やルートノードの色を再描画で更新
+    }
+
+    function toggleHelp() {
+        const hint = document.getElementById('controls-hint');
+        hint.classList.toggle('hidden');
+    }
+
+    // --- エクスポート ---
+    function exportPDF() {
+        // プレビュー環境（iframe内）かどうかのチェック
+        if (window.self !== window.top) {
+            alert("【プレビュー環境での注意】\nブラウザのセキュリティ制限により、この画面上では印刷ダイアログ（PDF保存）が開かない場合があります。\n\nその場合は、右上のボタンからHTMLファイルを「ダウンロード」し、ブラウザで直接開いて実行してください。");
+        }
+
+        const originalTitle = document.title;
+        document.title = state.data.text + "_マインドマップ";
+        window.focus();
+        setTimeout(() => {
+            window.print();
+            setTimeout(() => { document.title = originalTitle; }, 500);
+        }, 100);
+    }
+
+    function exportPNG() {
+        const originalTransform = mapContent.style.transform;
+        mapContent.style.transform = 'scale(1)';
+        mapContent.style.width = 'fit-content';
+        
+        document.querySelectorAll('.node.selected').forEach(el => el.classList.remove('selected'));
+        
+        // 背景色を現在のテーマに合わせる
+        const bgColor = state.darkMode ? "#111827" : "#f3f4f6";
+
+        html2canvas(mapContent, {
+            backgroundColor: bgColor,
+            scale: 2
+        }).then(canvas => {
+            const link = document.createElement('a');
+            link.download = state.data.text + '_マインドマップ.png';
+            link.href = canvas.toDataURL();
+            link.click();
+            
+            mapContent.style.transform = originalTransform;
+            mapContent.style.width = '';
+            selectNode(state.selectedId);
+        });
+    }
+
+    function exportText() {
+        const textContent = generateTextRecursive(state.data, 0);
+        const blob = new Blob([textContent], { type: 'text/plain' });
+        const link = document.createElement('a');
+        link.download = state.data.text + '_箇条書き.txt';
+        link.href = URL.createObjectURL(blob);
+        link.click();
+    }
+
+    function generateTextRecursive(node, depth) {
+        let text = "";
+        // インデント（スペース2つ）とハイフンでMarkdownリスト形式にする
+        const indent = "  ".repeat(depth); 
+        text += `${indent}- ${node.text}\n`;
+        
+        if (node.children) {
+            node.children.forEach(child => {
+                text += generateTextRecursive(child, depth + 1);
+            });
+        }
+        return text;
+    }
+
+    // --- ズーム機能 ---
+    function zoomIn() {
+        let newScale = state.scale * 1.2;
+        newScale = Math.min(newScale, 5);
+        state.scale = newScale;
+        updateTransform();
+    }
+
+    function zoomOut() {
+        let newScale = state.scale * 0.8;
+        newScale = Math.max(0.1, newScale);
+        state.scale = newScale;
+        updateTransform();
+    }
+
+    function resetZoom() {
+        centerMap();
+    }
+
+    function centerMap() {
+        // ズームをリセット
+        state.scale = 1;
+
+        // レンダリング完了を少し待ってから位置計算
+        setTimeout(() => {
+            // コンテンツのサイズを取得
+            const contentW = mapContent.offsetWidth;
+            const contentH = mapContent.offsetHeight;
+            
+            // キャンバス（表示領域）のサイズを取得
+            const canvasW = mapCanvas.clientWidth;
+            const canvasH = mapCanvas.clientHeight;
+
+            // 画面中央に来るようにオフセット（位置）を計算
+            // (キャンバス幅 - コンテンツ幅) / 2
+            const x = (canvasW - contentW) / 2;
+            const y = (canvasH - contentH) / 2;
+
+            state.panOffset = { x, y };
+            updateTransform();
+        }, 50);
+    }
+
+    function addGlobalListeners() {
+        document.addEventListener('keydown', (e) => {
+            const isEditing = document.activeElement.isContentEditable;
+            if (isEditing) {
+                if (e.key === 'Tab') {
+                    e.preventDefault();
+                    document.activeElement.blur();
+                    addChild();
+                }
+                return;
+            }
+            switch(e.key) {
+                case 'Tab': e.preventDefault(); addChild(); break;
+                case 'Enter': e.preventDefault(); addSibling(); break;
+                case 'Delete': 
+                case 'Backspace': deleteNode(); break;
+            }
+        });
+
+        // ズーム: Ctrlなしでも動作するように変更
+        mapCanvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const delta = e.deltaY > 0 ? 0.9 : 1.1;
+            let newScale = state.scale * delta;
+            newScale = Math.max(0.1, Math.min(newScale, 5));
+            state.scale = newScale;
+            updateTransform();
+        }, { passive: false });
+
+        mapCanvas.addEventListener('mousedown', (e) => {
+            if (!e.target.closest('.node') && !e.target.closest('button') && !e.target.closest('#toolbar') && !e.target.closest('#zoom-controls')) {
+                state.panning = true;
+                state.panStart = { x: e.clientX - state.panOffset.x, y: e.clientY - state.panOffset.y };
+                mapCanvas.style.cursor = 'grabbing';
+            }
+        });
+
+        window.addEventListener('mousemove', (e) => {
+            if (state.panning) {
+                e.preventDefault();
+                state.panOffset = {
+                    x: e.clientX - state.panStart.x,
+                    y: e.clientY - state.panStart.y
+                };
+                updateTransform();
+            }
+        });
+
+        window.addEventListener('mouseup', () => {
+            state.panning = false;
+            mapCanvas.style.cursor = 'default';
+        });
+
+        window.addEventListener('resize', () => {
+             drawLines();
+        });
+    }
+
+    function updateTransform() {
+        mapContent.style.transform = `translate(${state.panOffset.x}px, ${state.panOffset.y}px) scale(${state.scale})`;
+    }
+
+    init();
+
+</script>
+</body>
+</html>
